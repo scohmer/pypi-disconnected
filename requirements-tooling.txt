@@ -1,0 +1,7 @@
+# Tooling for the CONNECTED build machine (NOT mirrored content).
+# Install with: pip install -r requirements-tooling.txt
+bandersnatch>=6.0
+packaging>=23.0
+tomli>=2.0 ; python_version < "3.11"
+# Optional, only if you serve with pypiserver instead of `python -m http.server`:
+pypiserver>=2.0

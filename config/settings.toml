@@ -1,0 +1,39 @@
+# Central configuration for the disconnected PyPI mirror builder.
+# Edit this file, then run scripts/build_mirror.sh
+
+[source]
+# A GitHub repo URL, a blob URL, or a direct raw URL to a requirements.txt.
+# Examples that all work:
+#   https://github.com/psf/requests
+#   https://github.com/psf/requests/blob/main/requirements.txt
+#   https://raw.githubusercontent.com/psf/requests/main/requirements.txt
+github_url = "https://github.com/owner/repo"
+# Optional: path to requirements file inside the repo (used only for bare repo URLs).
+requirements_path_in_repo = "requirements.txt"
+
+[versions]
+# How far "forward" from the listed version to allow.
+#   "major" -> >=listed, <next_major   (e.g. requests>=2.28.0,<3)
+#   "minor" -> >=listed, <next_minor   (e.g. requests>=2.28.0,<2.29)
+# Per your choice: forward, capped within the same major series.
+cap_level = "major"
+# Include pre-releases (alpha/beta/rc)? Usually false for a stable mirror.
+include_prereleases = false
+
+[targets]
+# Wheels are downloaded only for these environments. Anything else is excluded
+# to keep the mirror small. Pure-python (py3-none-any) wheels and sdists are
+# always kept.
+python_versions = ["3.9", "3.10", "3.11", "3.12"]
+# Platforms to KEEP. Supported: linux, windows, macos, freebsd.
+platforms = ["linux", "windows"]
+
+[mirror]
+# Where bandersnatch writes the mirror on the CONNECTED build machine.
+output_dir = "./mirror"
+# bandersnatch master to sync from.
+master = "https://pypi.org"
+# Parallel download workers (bandersnatch caps this at 10).
+workers = 4
+# Keep the PyPI JSON metadata files (recommended; some clients use them).
+keep_json = true
