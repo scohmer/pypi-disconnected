@@ -7,9 +7,9 @@
 #   https://github.com/psf/requests
 #   https://github.com/psf/requests/blob/main/requirements.txt
 #   https://raw.githubusercontent.com/psf/requests/main/requirements.txt
-github_url = "https://github.com/owner/repo"
+github_url = "https://github.com/scohmer/pypi-disconnected"
 # Optional: path to requirements file inside the repo (used only for bare repo URLs).
-requirements_path_in_repo = "requirements.txt"
+requirements_path_in_repo = "source/requirements.txt"
 
 [versions]
 # How far "forward" from the listed version to allow.
@@ -24,7 +24,7 @@ include_prereleases = false
 # Wheels are downloaded only for these environments. Anything else is excluded
 # to keep the mirror small. Pure-python (py3-none-any) wheels and sdists are
 # always kept.
-python_versions = ["3.9", "3.10", "3.11", "3.12"]
+python_versions = ["3.9", "3.10", "3.11", "3.12", "3.13"]
 # Platforms to KEEP. Supported: linux, windows, macos, freebsd.
 platforms = ["linux", "windows"]
 
