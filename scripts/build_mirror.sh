@@ -51,6 +51,7 @@ case "$OUTPUT_DIR" in
 esac
 
 echo "==> [1/3] Resolving dependency closure"
+rm -rf "$WORK/.metacache"
 PRE_FLAG=()
 [ -n "$INCLUDE_PRE" ] && PRE_FLAG=(--include-prereleases)
 python3 "$HERE/resolve_deps.py" \
@@ -78,6 +79,7 @@ python3 "$HERE/generate_bandersnatch_conf.py" \
     --out "$WORK/bandersnatch.conf"
 
 echo "==> [3/3] Running bandersnatch mirror"
+rm -f "$OUTPUT_DIR/status"
 if ! command -v bandersnatch >/dev/null 2>&1; then
     echo "ERROR: bandersnatch not installed. Run: pip install -r requirements-tooling.txt" >&2
     exit 1
