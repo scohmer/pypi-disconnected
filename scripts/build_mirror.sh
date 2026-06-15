@@ -66,7 +66,7 @@ python3 "$HERE/resolve_deps.py" \
 
 echo "==> [2/3] Generating bandersnatch.conf"
 KEEP_JSON_FLAG=()
-[ -n "$KEEP_JSON" ] && KEEP_JSON_FLAG=(--keep-json)
+[ -z "$KEEP_JSON" ] && KEEP_JSON_FLAG=(--no-keep-json)
 python3 "$HERE/generate_bandersnatch_conf.py" \
     --allowlist "$WORK/allowlist.txt" \
     --output-dir "$OUTPUT_DIR" \
