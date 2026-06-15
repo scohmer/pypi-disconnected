@@ -22,7 +22,7 @@ ALL_PY3 = [f"3.{m}" for m in range(0, 15)]
 
 def py_excludes(keep_versions: list[str]) -> list[str]:
     keep_minor = {v if v.count(".") == 1 else ".".join(v.split(".")[:2]) for v in keep_versions}
-    excl = ["py2"]  # drop all python 2
+    excl = []  # drop all python 2
     for m in ALL_PY3:
         if m not in keep_minor:
             excl.append(f"py{m}")
