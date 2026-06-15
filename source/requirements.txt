@@ -1,1 +1,3 @@
 markitdown==0.1.4
+setuptools>=40.8.0
+wheel>=0.38.0
