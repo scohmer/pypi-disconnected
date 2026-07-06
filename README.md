@@ -69,7 +69,7 @@ On the **connected** build machine:
 
 ```bash
 pip install -r requirements-tooling.txt        # bandersnatch, packaging, ...
-$EDITOR config/settings.toml                    # set github_url + targets
+$EDITOR config/settings.toml                    # set requirements_file (or github_url) + targets
 scripts/build_mirror.sh                         # resolve → config → mirror
 ```
 

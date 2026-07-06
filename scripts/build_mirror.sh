@@ -30,7 +30,8 @@ def emit(k, v):
     if isinstance(v, list):
         v = " ".join(map(str, v))
     print(f'{k}={shlex.quote(str(v))}')
-emit("GITHUB_URL", c["source"]["github_url"])
+emit("REQUIREMENTS_FILE", c["source"].get("requirements_file", ""))
+emit("GITHUB_URL", c["source"].get("github_url", ""))
 emit("PATH_IN_REPO", c["source"].get("requirements_path_in_repo", "requirements.txt"))
 emit("CAP_LEVEL", c["versions"]["cap_level"])
 emit("INCLUDE_PRE", "1" if c["versions"].get("include_prereleases") else "")
@@ -54,9 +55,23 @@ echo "==> [1/3] Resolving dependency closure"
 rm -rf "$WORK/.metacache"
 PRE_FLAG=()
 [ -n "$INCLUDE_PRE" ] && PRE_FLAG=(--include-prereleases)
+
+SOURCE_FLAGS=()
+if [ -n "$REQUIREMENTS_FILE" ]; then
+    case "$REQUIREMENTS_FILE" in
+        /*) : ;;
+        *) REQUIREMENTS_FILE="$ROOT/$REQUIREMENTS_FILE" ;;
+    esac
+    SOURCE_FLAGS=(--requirements-file "$REQUIREMENTS_FILE")
+elif [ -n "$GITHUB_URL" ]; then
+    SOURCE_FLAGS=(--github-url "$GITHUB_URL" --path-in-repo "$PATH_IN_REPO")
+else
+    echo "ERROR: settings.toml must set [source] requirements_file or github_url." >&2
+    exit 1
+fi
+
 python3 "$HERE/resolve_deps.py" \
-    --github-url "$GITHUB_URL" \
-    --path-in-repo "$PATH_IN_REPO" \
+    "${SOURCE_FLAGS[@]}" \
     --cap-level "$CAP_LEVEL" \
     --python-versions $PY_VERSIONS \
     --platforms $PLATFORMS \

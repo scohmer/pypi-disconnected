@@ -2,12 +2,19 @@
 # Edit this file, then run scripts/build_mirror.sh
 
 [source]
-# A GitHub repo URL, a blob URL, or a direct raw URL to a requirements.txt.
-# Examples that all work:
+# Choose ONE of the two options below. If requirements_file is set (non-empty)
+# it takes priority and github_url is ignored.
+
+# Option A: a requirements.txt already on this machine (path is relative to the
+# project root unless absolute).
+requirements_file = "source/requirements.txt"
+
+# Option B: fetch from GitHub instead. A GitHub repo URL, a blob URL, or a
+# direct raw URL to a requirements.txt. Examples that all work:
 #   https://github.com/psf/requests
 #   https://github.com/psf/requests/blob/main/requirements.txt
 #   https://raw.githubusercontent.com/psf/requests/main/requirements.txt
-github_url = "https://github.com/scohmer/pypi-disconnected"
+github_url = ""
 # Optional: path to requirements file inside the repo (used only for bare repo URLs).
 requirements_path_in_repo = "source/requirements.txt"
 
