@@ -111,34 +111,16 @@ class TestLowerBound(unittest.TestCase):
         self.assertEqual(str(v), "2.0")
 
 
-class TestCapFor(unittest.TestCase):
-    def _v(self, s):
-        from packaging.version import Version
-        return Version(s)
-
-    def test_major_cap(self):
-        self.assertEqual(rd.cap_for(self._v("2.28.0"), "major"), "<3")
-
-    def test_minor_cap(self):
-        self.assertEqual(rd.cap_for(self._v("2.28.0"), "minor"), "<2.29")
-
-    def test_zero_major(self):
-        self.assertEqual(rd.cap_for(self._v("0.9.5"), "major"), "<1")
-
-    def test_zero_major_minor_cap(self):
-        self.assertEqual(rd.cap_for(self._v("0.9.5"), "minor"), "<0.10")
-
-
 class TestBuildSpecifier(unittest.TestCase):
     def _v(self, s):
         from packaging.version import Version
         return Version(s)
 
-    def test_major(self):
-        self.assertEqual(rd.build_specifier(self._v("2.28.0"), "major"), ">=2.28.0,<3")
+    def test_uncapped(self):
+        self.assertEqual(rd.build_specifier(self._v("2.28.0")), ">=2.28.0")
 
-    def test_minor(self):
-        self.assertEqual(rd.build_specifier(self._v("2.28.0"), "minor"), ">=2.28.0,<2.29")
+    def test_zero_major_uncapped(self):
+        self.assertEqual(rd.build_specifier(self._v("0.9.5")), ">=0.9.5")
 
 
 # --------------------------------------------------------------------------- #

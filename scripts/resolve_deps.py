@@ -14,21 +14,20 @@ Strategy
 --------
 1. Fetch requirements.txt (repo URL, blob URL, or raw URL all accepted).
 2. For each top-level requirement, the lower bound is the version LISTED in
-   requirements.txt; the upper bound is the next major (or minor) version.
-   If a top-level requirement has NO version listed at all, the lower bound
-   instead becomes the oldest release that still supports the lowest Python
-   version in [targets] python_versions, and the upper bound is left open
-   (mirrors that package through latest) -- otherwise an unpinned entry would
-   collapse to "whatever is newest today", which may have already dropped
-   support for an older Python you still target.
+   requirements.txt. If a top-level requirement has NO version listed at all,
+   the lower bound instead becomes the oldest release that still supports the
+   lowest Python version in [targets] python_versions -- otherwise an unpinned
+   entry would collapse to "whatever is newest today", which may have already
+   dropped support for an older Python you still target.
 3. Walk transitive dependencies using the PyPI JSON API. For each package we
    pick the newest version satisfying the accumulated constraints, read its
    `requires_dist`, and evaluate environment markers across the target matrix
    (python_versions x platforms). A dependency is followed if its marker is
    true for ANY target environment. Extras are followed only when requested.
-4. For transitive packages the lower bound is the resolved version; the upper
-   bound is the next major (or minor). This implements "from the version
-   forward, capped within the same series" uniformly.
+   For transitive packages the lower bound is the resolved version.
+4. Every allowlist entry is left open-ended (no upper bound): the mirror
+   carries every release from the floor through whatever is newest at build
+   time, so bandersnatch (and future re-runs) naturally pick up new releases.
 
 This script needs network access to PyPI (run it on the CONNECTED machine).
 It only reads metadata here; bandersnatch does the actual file downloads.
@@ -147,15 +146,8 @@ def lower_bound(spec: SpecifierSet) -> Version | None:
     return min(candidates) if candidates else None
 
 
-def cap_for(v: Version, cap_level: str) -> str:
-    rel = list(v.release) + [0, 0]
-    if cap_level == "minor":
-        return f"<{rel[0]}.{rel[1] + 1}"
-    return f"<{rel[0] + 1}"  # major
-
-
-def build_specifier(floor: Version, cap_level: str) -> str:
-    return f">={floor},{cap_for(floor, cap_level)}"
+def build_specifier(floor: Version) -> str:
+    return f">={floor}"
 
 
 # --------------------------------------------------------------------------- #
@@ -320,7 +312,7 @@ def oldest_full_version(python_versions: list[str]) -> str:
 # --------------------------------------------------------------------------- #
 # Resolution
 # --------------------------------------------------------------------------- #
-def resolve(top_reqs, matrix, cap_level, include_pre, cache_dir, python_versions, verbose=False):
+def resolve(top_reqs, matrix, include_pre, cache_dir, python_versions, verbose=False):
     # constraints[name] = accumulated SpecifierSet
     constraints: dict[str, SpecifierSet] = defaultdict(SpecifierSet)
     extras_req: dict[str, set] = defaultdict(set)
@@ -401,21 +393,16 @@ def resolve(top_reqs, matrix, cap_level, include_pre, cache_dir, python_versions
     if not verbose:
         print(file=sys.stderr)  # end the \r progress line
 
-    # Build final allowlist specifiers.
+    # Build final allowlist specifiers: floor forward through latest, uncapped.
+    #   - explicit version in requirements.txt -> that version
+    #   - unlisted top-level requirement       -> oldest release supporting the
+    #                                              lowest configured Python
+    #   - transitive dependency                -> the resolved version
     allowlist = {}
     for key, v in sorted(resolved.items()):
-        if key in listed_floor:
-            # Explicit version in requirements.txt: forward, capped to cap_level.
-            floor = min(listed_floor[key], v)
-            allowlist[key] = build_specifier(floor, cap_level)
-        elif key in python_floor:
-            # No version listed: oldest release supporting the lowest configured
-            # Python, forward through latest -- uncapped.
-            floor = min(python_floor[key], v)
-            allowlist[key] = f">={floor}"
-        else:
-            # Transitive dependency: forward from the resolved version, capped.
-            allowlist[key] = build_specifier(v, cap_level)
+        floor = listed_floor.get(key, python_floor.get(key, v))
+        floor = min(floor, v)
+        allowlist[key] = build_specifier(floor)
 
     lock = {
         "packages": {
@@ -441,7 +428,6 @@ def main():
     ap.add_argument("--github-url", required=False, help="Repo / blob / raw URL to requirements.txt")
     ap.add_argument("--requirements-file", help="Local requirements.txt instead of fetching")
     ap.add_argument("--path-in-repo", default="requirements.txt")
-    ap.add_argument("--cap-level", default="major", choices=["major", "minor"])
     ap.add_argument("--python-versions", nargs="+", default=["3.9", "3.10", "3.11", "3.12"])
     ap.add_argument("--platforms", nargs="+", default=["linux", "windows"])
     ap.add_argument("--include-prereleases", action="store_true")
@@ -468,14 +454,14 @@ def main():
     print(f"Top-level requirements: {len(top)}", file=sys.stderr)
     matrix = build_matrix(args.python_versions, args.platforms)
 
-    allowlist, lock = resolve(top, matrix, args.cap_level, args.include_prereleases,
+    allowlist, lock = resolve(top, matrix, args.include_prereleases,
                               args.cache_dir, args.python_versions, verbose=args.verbose)
 
     with open(args.out_allowlist, "w", encoding="utf-8") as f:
         for name in sorted(allowlist):
             f.write(f"{name}{allowlist[name]}\n")
     lock["targets"] = {"python_versions": args.python_versions, "platforms": args.platforms,
-                       "cap_level": args.cap_level, "include_prereleases": args.include_prereleases}
+                       "include_prereleases": args.include_prereleases}
     with open(args.out_lock, "w", encoding="utf-8") as f:
         json.dump(lock, f, indent=2)
 

@@ -33,7 +33,6 @@ def emit(k, v):
 emit("REQUIREMENTS_FILE", c["source"].get("requirements_file", ""))
 emit("GITHUB_URL", c["source"].get("github_url", ""))
 emit("PATH_IN_REPO", c["source"].get("requirements_path_in_repo", "requirements.txt"))
-emit("CAP_LEVEL", c["versions"]["cap_level"])
 emit("INCLUDE_PRE", "1" if c["versions"].get("include_prereleases") else "")
 emit("PY_VERSIONS", c["targets"]["python_versions"])
 emit("PLATFORMS", c["targets"]["platforms"])
@@ -72,7 +71,6 @@ fi
 
 python3 "$HERE/resolve_deps.py" \
     "${SOURCE_FLAGS[@]}" \
-    --cap-level "$CAP_LEVEL" \
     --python-versions $PY_VERSIONS \
     --platforms $PLATFORMS \
     "${PRE_FLAG[@]}" \

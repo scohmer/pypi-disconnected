@@ -19,11 +19,8 @@ github_url = ""
 requirements_path_in_repo = "source/requirements.txt"
 
 [versions]
-# How far "forward" from the listed version to allow.
-#   "major" -> >=listed, <next_major   (e.g. requests>=2.28.0,<3)
-#   "minor" -> >=listed, <next_minor   (e.g. requests>=2.28.0,<2.29)
-# Per your choice: forward, capped within the same major series.
-cap_level = "major"
+# Every package is mirrored from its floor version forward through whatever is
+# newest at build time (uncapped) -- e.g. requests>=2.28.0 with no upper bound.
 # Include pre-releases (alpha/beta/rc)? Usually false for a stable mirror.
 include_prereleases = false
 

@@ -2,10 +2,10 @@
 
 Build a self-hosted, **offline** PyPI `/simple/` repository from a project's
 `requirements.txt`. Point it at a GitHub repo; it resolves the full transitive
-dependency closure (from each listed version *forward*, capped within the same
-major series), mirrors the wheels and PEP 503 metadata for your target
-platforms and Python versions, and produces a directory you can copy to an
-air-gapped host and serve.
+dependency closure (from each listed version *forward* through latest),
+mirrors the wheels and PEP 503 metadata for your target platforms and Python
+versions, and produces a directory you can copy to an air-gapped host and
+serve.
 
 ## How it works
 
@@ -15,7 +15,7 @@ GitHub requirements.txt
         ▼
  resolve_deps.py ──────────► allowlist.txt  (PEP 440 specifiers)
    • fetch requirements                       + lock.json (audit/reproducibility)
-   • cap versions (>=listed, <next major)
+   • floor versions (>=listed, uncapped through latest)
    • walk transitive deps via PyPI JSON API
    • evaluate markers across target matrix
         │
@@ -38,13 +38,11 @@ served as static files — no internet required.
 
 ## Design decisions
 
-**Version coverage — "forward, capped to the major series."** For each
-top-level package the lower bound is the version listed in `requirements.txt`;
-the upper bound is the next major version (e.g. `requests==2.28.0` →
-`requests>=2.28.0,<3`). Transitive dependencies are capped the same way from
-their resolved version. This is configurable (`cap_level = "major"` or
-`"minor"` in `settings.toml`). Note for `0.x` packages, a "major" cap is wide —
-switch to `minor` if those projects matter to you.
+**Version coverage — "forward, uncapped."** For each top-level package the
+lower bound is the version listed in `requirements.txt`; there is no upper
+bound (e.g. `requests==2.28.0` → `requests>=2.28.0`, which mirrors 2.28.0
+through whatever is newest at build time — 3.x, 4.x, however far it goes).
+Transitive dependencies work the same way, floored at their resolved version.
 
 **Unversioned top-level requirements.** If a line in `requirements.txt` has no
 version at all (bare `somelibrary`), the lower bound is NOT "whatever is
@@ -52,7 +50,7 @@ newest today" — that would collapse the allowlist to a single just-published
 release, which may have already dropped support for an older Python you still
 target in `[targets] python_versions`. Instead the floor is the oldest release
 that still supports the *lowest* Python version you've configured, and the
-range is left open through latest (uncapped, unlike the pinned case above).
+range is mirrored through latest.
 
 **Targets are explicit.** Wheels are mirrored only for the platforms
 (`linux`, `windows`) and Python versions (3.9–3.12) you declare. Pure-Python
@@ -107,8 +105,7 @@ pip install --index-url http://<host>:8080/simple/ <package>
 python3 scripts/resolve_deps.py \
     --github-url https://github.com/owner/repo \
     --python-versions 3.9 3.10 3.11 3.12 \
-    --platforms linux windows \
-    --cap-level major
+    --platforms linux windows
 
 # Generate config from an allowlist:
 python3 scripts/generate_bandersnatch_conf.py \
