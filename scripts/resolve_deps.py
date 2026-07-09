@@ -15,6 +15,12 @@ Strategy
 1. Fetch requirements.txt (repo URL, blob URL, or raw URL all accepted).
 2. For each top-level requirement, the lower bound is the version LISTED in
    requirements.txt; the upper bound is the next major (or minor) version.
+   If a top-level requirement has NO version listed at all, the lower bound
+   instead becomes the oldest release that still supports the lowest Python
+   version in [targets] python_versions, and the upper bound is left open
+   (mirrors that package through latest) -- otherwise an unpinned entry would
+   collapse to "whatever is newest today", which may have already dropped
+   support for an older Python you still target.
 3. Walk transitive dependencies using the PyPI JSON API. For each package we
    pick the newest version satisfying the accumulated constraints, read its
    `requires_dist`, and evaluate environment markers across the target matrix
@@ -267,16 +273,65 @@ def best_version(meta: dict, spec: SpecifierSet, include_pre: bool) -> Version |
     return max(versions) if versions else None
 
 
+def release_supports_python(files: list[dict], python_full_version: str) -> bool:
+    """True if any file in this release is installable under python_full_version.
+
+    A file with no requires_python metadata is treated as unconstrained (common
+    for releases published before python_requires existed).
+    """
+    if not files:
+        return False
+    target = Version(python_full_version)
+    for f in files:
+        rp = f.get("requires_python")
+        if not rp:
+            return True
+        try:
+            if SpecifierSet(rp).contains(target, prereleases=True):
+                return True
+        except Exception:  # noqa: BLE001 - malformed requires_python on PyPI
+            continue
+    return False
+
+
+def min_version_supporting_python(meta: dict, python_full_version: str, include_pre: bool) -> Version | None:
+    """Oldest non-yanked release that supports python_full_version."""
+    candidates = []
+    for vstr, files in meta.get("releases", {}).items():
+        if not files or all(f.get("yanked") for f in files):
+            continue
+        try:
+            v = Version(vstr)
+        except InvalidVersion:
+            continue
+        if v.is_prerelease and not include_pre:
+            continue
+        if release_supports_python(files, python_full_version):
+            candidates.append(v)
+    return min(candidates) if candidates else None
+
+
+def oldest_full_version(python_versions: list[str]) -> str:
+    """Full version string (X.Y.Z) of the lowest entry in python_versions."""
+    oldest = min(python_versions, key=lambda p: tuple(int(x) for x in p.split(".")))
+    return oldest if oldest.count(".") >= 2 else f"{oldest}.0"
+
+
 # --------------------------------------------------------------------------- #
 # Resolution
 # --------------------------------------------------------------------------- #
-def resolve(top_reqs, matrix, cap_level, include_pre, cache_dir, verbose=False):
+def resolve(top_reqs, matrix, cap_level, include_pre, cache_dir, python_versions, verbose=False):
     # constraints[name] = accumulated SpecifierSet
     constraints: dict[str, SpecifierSet] = defaultdict(SpecifierSet)
     extras_req: dict[str, set] = defaultdict(set)
     required_by: dict[str, set] = defaultdict(set)
     is_top: set[str] = set()
     listed_floor: dict[str, Version] = {}
+    # Auto floor for top-level requirements with NO version listed at all: the
+    # oldest release that still supports the lowest configured Python version,
+    # mirrored uncapped through latest (see min_version_supporting_python).
+    python_floor: dict[str, Version] = {}
+    oldest_py = oldest_full_version(python_versions)
 
     queue: deque[str] = deque()
     for r in top_reqs:
@@ -288,6 +343,12 @@ def resolve(top_reqs, matrix, cap_level, include_pre, cache_dir, verbose=False):
         fl = lower_bound(r.specifier)
         if fl:
             listed_floor[key] = fl
+        else:
+            meta = pypi_metadata(key, cache_dir)
+            if meta:
+                pf = min_version_supporting_python(meta, oldest_py, include_pre)
+                if pf:
+                    python_floor[key] = pf
         queue.append(key)
 
     resolved: dict[str, Version] = {}
@@ -343,11 +404,18 @@ def resolve(top_reqs, matrix, cap_level, include_pre, cache_dir, verbose=False):
     # Build final allowlist specifiers.
     allowlist = {}
     for key, v in sorted(resolved.items()):
-        floor = listed_floor.get(key, v)  # top-level uses listed floor; else resolved
-        # Never let the floor exceed the resolved version.
-        if floor > v:
-            floor = v
-        allowlist[key] = build_specifier(floor, cap_level)
+        if key in listed_floor:
+            # Explicit version in requirements.txt: forward, capped to cap_level.
+            floor = min(listed_floor[key], v)
+            allowlist[key] = build_specifier(floor, cap_level)
+        elif key in python_floor:
+            # No version listed: oldest release supporting the lowest configured
+            # Python, forward through latest -- uncapped.
+            floor = min(python_floor[key], v)
+            allowlist[key] = f">={floor}"
+        else:
+            # Transitive dependency: forward from the resolved version, capped.
+            allowlist[key] = build_specifier(v, cap_level)
 
     lock = {
         "packages": {
@@ -401,7 +469,7 @@ def main():
     matrix = build_matrix(args.python_versions, args.platforms)
 
     allowlist, lock = resolve(top, matrix, args.cap_level, args.include_prereleases,
-                              args.cache_dir, verbose=args.verbose)
+                              args.cache_dir, args.python_versions, verbose=args.verbose)
 
     with open(args.out_allowlist, "w", encoding="utf-8") as f:
         for name in sorted(allowlist):

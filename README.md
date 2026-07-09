@@ -46,6 +46,14 @@ their resolved version. This is configurable (`cap_level = "major"` or
 `"minor"` in `settings.toml`). Note for `0.x` packages, a "major" cap is wide —
 switch to `minor` if those projects matter to you.
 
+**Unversioned top-level requirements.** If a line in `requirements.txt` has no
+version at all (bare `somelibrary`), the lower bound is NOT "whatever is
+newest today" — that would collapse the allowlist to a single just-published
+release, which may have already dropped support for an older Python you still
+target in `[targets] python_versions`. Instead the floor is the oldest release
+that still supports the *lowest* Python version you've configured, and the
+range is left open through latest (uncapped, unlike the pinned case above).
+
 **Targets are explicit.** Wheels are mirrored only for the platforms
 (`linux`, `windows`) and Python versions (3.9–3.12) you declare. Pure-Python
 (`py3-none-any`) wheels and sdists are always kept. This is the main lever on
