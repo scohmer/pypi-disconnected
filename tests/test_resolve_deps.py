@@ -124,63 +124,33 @@ class TestBuildSpecifier(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Unversioned top-level requirements: floor from Python compatibility
+# Unversioned top-level requirements: latest + previous N releases
 # --------------------------------------------------------------------------- #
-class TestOldestFullVersion(unittest.TestCase):
-    def test_picks_lowest(self):
-        self.assertEqual(rd.oldest_full_version(["3.11", "3.9", "3.12"]), "3.9.0")
+class TestLatestNVersions(unittest.TestCase):
+    def test_picks_newest_n_descending(self):
+        meta = {"releases": {v: [{}] for v in ["1.0.0", "2.0.0", "3.0.0", "4.0.0", "5.0.0"]}}
+        result = [str(v) for v in rd.latest_n_versions(meta, 4, include_pre=False)]
+        self.assertEqual(result, ["5.0.0", "4.0.0", "3.0.0", "2.0.0"])
 
-    def test_passthrough_full_version(self):
-        self.assertEqual(rd.oldest_full_version(["3.9.4", "3.10"]), "3.9.4")
-
-
-class TestReleaseSupportsPython(unittest.TestCase):
-    def test_no_requires_python_is_unconstrained(self):
-        files = [{"requires_python": None}]
-        self.assertTrue(rd.release_supports_python(files, "3.9.0"))
-
-    def test_matching_requires_python(self):
-        files = [{"requires_python": ">=3.8"}]
-        self.assertTrue(rd.release_supports_python(files, "3.9.0"))
-
-    def test_non_matching_requires_python(self):
-        files = [{"requires_python": ">=3.12"}]
-        self.assertFalse(rd.release_supports_python(files, "3.9.0"))
-
-    def test_any_file_matching_is_enough(self):
-        files = [{"requires_python": ">=3.12"}, {"requires_python": ">=3.6"}]
-        self.assertTrue(rd.release_supports_python(files, "3.9.0"))
-
-    def test_no_files_is_false(self):
-        self.assertFalse(rd.release_supports_python([], "3.9.0"))
-
-
-class TestMinVersionSupportingPython(unittest.TestCase):
-    def test_picks_oldest_compatible(self):
-        meta = {
-            "releases": {
-                "1.0.0": [{"requires_python": None}],
-                "2.0.0": [{"requires_python": ">=3.9"}],
-                "3.0.0": [{"requires_python": ">=3.12"}],
-            }
-        }
-        v = rd.min_version_supporting_python(meta, "3.9.0", include_pre=False)
-        self.assertEqual(str(v), "1.0.0")
+    def test_fewer_releases_than_n(self):
+        meta = {"releases": {"1.0.0": [{}], "2.0.0": [{}]}}
+        result = [str(v) for v in rd.latest_n_versions(meta, 4, include_pre=False)]
+        self.assertEqual(result, ["2.0.0", "1.0.0"])
 
     def test_skips_yanked(self):
-        meta = {
-            "releases": {
-                "1.0.0": [{"requires_python": None, "yanked": True}],
-                "2.0.0": [{"requires_python": None}],
-            }
-        }
-        v = rd.min_version_supporting_python(meta, "3.9.0", include_pre=False)
-        self.assertEqual(str(v), "2.0.0")
+        meta = {"releases": {"1.0.0": [{"yanked": True}], "2.0.0": [{}]}}
+        result = [str(v) for v in rd.latest_n_versions(meta, 4, include_pre=False)]
+        self.assertEqual(result, ["2.0.0"])
 
-    def test_none_when_nothing_compatible(self):
-        meta = {"releases": {"3.0.0": [{"requires_python": ">=3.12"}]}}
-        v = rd.min_version_supporting_python(meta, "3.9.0", include_pre=False)
-        self.assertIsNone(v)
+    def test_excludes_prereleases_by_default(self):
+        meta = {"releases": {"1.0.0": [{}], "2.0.0rc1": [{}]}}
+        result = [str(v) for v in rd.latest_n_versions(meta, 4, include_pre=False)]
+        self.assertEqual(result, ["1.0.0"])
+
+    def test_includes_prereleases_when_requested(self):
+        meta = {"releases": {"1.0.0": [{}], "2.0.0rc1": [{}]}}
+        result = [str(v) for v in rd.latest_n_versions(meta, 4, include_pre=True)]
+        self.assertEqual(result, ["2.0.0rc1", "1.0.0"])
 
 
 # --------------------------------------------------------------------------- #

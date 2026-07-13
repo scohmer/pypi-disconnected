@@ -45,12 +45,10 @@ through whatever is newest at build time — 3.x, 4.x, however far it goes).
 Transitive dependencies work the same way, floored at their resolved version.
 
 **Unversioned top-level requirements.** If a line in `requirements.txt` has no
-version at all (bare `somelibrary`), the lower bound is NOT "whatever is
-newest today" — that would collapse the allowlist to a single just-published
-release, which may have already dropped support for an older Python you still
-target in `[targets] python_versions`. Instead the floor is the oldest release
-that still supports the *lowest* Python version you've configured, and the
-range is mirrored through latest.
+version at all (bare `somelibrary`), mirroring "whatever is newest today"
+alone would collapse the allowlist to a single just-published release. Instead
+the mirror carries the latest release plus its previous 3 (4 releases total),
+giving a little headroom without pulling the package's entire history.
 
 **Targets are explicit.** Wheels are mirrored only for the platforms
 (`linux`, `windows`) and Python versions (3.9–3.12) you declare. Pure-Python
