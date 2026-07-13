@@ -5,6 +5,7 @@ import sys
 import os
 import types
 import unittest
+from unittest import mock
 
 # Allow importing from scripts/ without an __init__.py
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -123,6 +124,32 @@ class TestBuildSpecifier(unittest.TestCase):
         self.assertEqual(rd.build_specifier(self._v("0.9.5")), ">=0.9.5")
 
 
+class TestExactPin(unittest.TestCase):
+    def _spec(self, s):
+        from packaging.specifiers import SpecifierSet
+        return SpecifierSet(s)
+
+    def test_exact_version(self):
+        v = rd.exact_pin(self._spec("==2.28.0"))
+        self.assertEqual(str(v), "2.28.0")
+
+    def test_glob_is_not_exact(self):
+        self.assertIsNone(rd.exact_pin(self._spec("==2.28.*")))
+
+    def test_range_is_not_exact(self):
+        self.assertIsNone(rd.exact_pin(self._spec(">=2.28.0")))
+
+    def test_combined_specifier_is_not_exact(self):
+        self.assertIsNone(rd.exact_pin(self._spec("==2.28.0,!=2.28.1")))
+
+    def test_no_specifier_is_not_exact(self):
+        self.assertIsNone(rd.exact_pin(self._spec("")))
+
+    def test_arbitrary_equality(self):
+        v = rd.exact_pin(self._spec("===2.28.0"))
+        self.assertEqual(str(v), "2.28.0")
+
+
 # --------------------------------------------------------------------------- #
 # Unversioned top-level requirements: latest + previous N releases
 # --------------------------------------------------------------------------- #
@@ -209,6 +236,63 @@ class TestMarkerTrueForAny(unittest.TestCase):
         matrix = rd.build_matrix(["3.10"], ["linux"])
         self.assertFalse(rd.marker_true_for_any(req, matrix, set()))
         self.assertTrue(rd.marker_true_for_any(req, matrix, {"security"}))
+
+
+# --------------------------------------------------------------------------- #
+# resolve() end-to-end, PyPI calls mocked out
+# --------------------------------------------------------------------------- #
+class TestResolveExactPin(unittest.TestCase):
+    def setUp(self):
+        rd._meta_cache.clear()
+
+    def _fake_metadata(self, name_to_versions):
+        def fake_pypi_metadata(name, cache_dir):
+            versions = name_to_versions.get(rd.canonicalize_name(name))
+            if versions is None:
+                return None
+            return {
+                "info": {"requires_dist": []},
+                "releases": {v: [{}] for v in versions},
+            }
+
+        def fake_pypi_metadata_version(name, version, cache_dir):
+            return {"info": {"requires_dist": []}}
+
+        return fake_pypi_metadata, fake_pypi_metadata_version
+
+    def test_exact_pin_gets_pin_plus_latest_window(self):
+        versions = [f"{i}.0.0" for i in range(1, 7)]  # 1.0.0 .. 6.0.0
+        fake_meta, fake_meta_version = self._fake_metadata({"fakepkg": versions})
+        with mock.patch.object(rd, "pypi_metadata", side_effect=fake_meta), \
+             mock.patch.object(rd, "pypi_metadata_version", side_effect=fake_meta_version):
+            top = rd.parse_requirements("fakepkg==2.0.0")
+            matrix = rd.build_matrix(["3.11"], ["linux"])
+            allowlist, lock = rd.resolve(top, matrix, include_pre=False, cache_dir=None)
+
+        self.assertEqual(sorted(allowlist["fakepkg"]), sorted(["==2.0.0", ">=3.0.0,<=6.0.0"]))
+        self.assertEqual(lock["packages"]["fakepkg"]["resolved"], "2.0.0")
+
+    def test_unversioned_gets_only_latest_window(self):
+        versions = [f"{i}.0.0" for i in range(1, 7)]
+        fake_meta, fake_meta_version = self._fake_metadata({"fakepkg": versions})
+        with mock.patch.object(rd, "pypi_metadata", side_effect=fake_meta), \
+             mock.patch.object(rd, "pypi_metadata_version", side_effect=fake_meta_version):
+            top = rd.parse_requirements("fakepkg")
+            matrix = rd.build_matrix(["3.11"], ["linux"])
+            allowlist, lock = rd.resolve(top, matrix, include_pre=False, cache_dir=None)
+
+        self.assertEqual(allowlist["fakepkg"], [">=3.0.0,<=6.0.0"])
+
+    def test_range_stays_uncapped_single_line(self):
+        versions = [f"{i}.0.0" for i in range(1, 7)]
+        fake_meta, fake_meta_version = self._fake_metadata({"fakepkg": versions})
+        with mock.patch.object(rd, "pypi_metadata", side_effect=fake_meta), \
+             mock.patch.object(rd, "pypi_metadata_version", side_effect=fake_meta_version):
+            top = rd.parse_requirements("fakepkg>=2.0.0")
+            matrix = rd.build_matrix(["3.11"], ["linux"])
+            allowlist, lock = rd.resolve(top, matrix, include_pre=False, cache_dir=None)
+
+        self.assertEqual(allowlist["fakepkg"], [">=2.0.0"])
 
 
 if __name__ == "__main__":

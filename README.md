@@ -38,11 +38,18 @@ served as static files — no internet required.
 
 ## Design decisions
 
-**Version coverage — "forward, uncapped."** For each top-level package the
-lower bound is the version listed in `requirements.txt`; there is no upper
-bound (e.g. `requests==2.28.0` → `requests>=2.28.0`, which mirrors 2.28.0
-through whatever is newest at build time — 3.x, 4.x, however far it goes).
+**Version coverage — "forward, uncapped."** For a ranged top-level requirement
+(e.g. `requests>=2.28.0`) the lower bound is the version listed in
+`requirements.txt`; there is no upper bound — the mirror carries 2.28.0
+through whatever is newest at build time (3.x, 4.x, however far it goes).
 Transitive dependencies work the same way, floored at their resolved version.
+
+**Exact pins (`library==X.Y.Z`).** An exact pin mirrors that specific version
+(plus its dependency closure) so the pinned install always works, but ALSO
+adds the latest release and its previous 3 (see below) so the mirror isn't
+stuck a single version behind the moment you want to upgrade. A package can
+therefore get two lines in `allowlist.txt`; bandersnatch mirrors a release if
+it matches either.
 
 **Unversioned top-level requirements.** If a line in `requirements.txt` has no
 version at all (bare `somelibrary`), mirroring "whatever is newest today"

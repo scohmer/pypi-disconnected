@@ -13,11 +13,17 @@ closure and emit:
 Strategy
 --------
 1. Fetch requirements.txt (repo URL, blob URL, or raw URL all accepted).
-2. For each top-level requirement, the lower bound is the version LISTED in
-   requirements.txt, mirrored forward through whatever is newest at build time
-   (no upper bound). If a top-level requirement has NO version listed at all,
-   only the latest release and its previous UNVERSIONED_RELEASE_COUNT - 1
-   releases are mirrored (see latest_n_versions).
+2. For each top-level requirement:
+     - an exact pin (library==X.Y.Z) mirrors that exact version PLUS the
+       latest release and its previous UNVERSIONED_RELEASE_COUNT - 1 (so the
+       mirror stays useful even if a client can't use the pinned version);
+     - a range (e.g. library>=X) mirrors X forward through whatever is newest
+       at build time (no upper bound);
+     - no version at all mirrors only the latest release and its previous
+       UNVERSIONED_RELEASE_COUNT - 1 (see latest_n_versions).
+   A package can therefore get more than one line in allowlist.txt --
+   bandersnatch's allowlist_release plugin mirrors a release if it matches
+   ANY line for that package name.
 3. Walk transitive dependencies using the PyPI JSON API. For each package we
    pick the newest version satisfying the accumulated constraints, read its
    `requires_dist`, and evaluate environment markers across the target matrix
@@ -145,6 +151,22 @@ def lower_bound(spec: SpecifierSet) -> Version | None:
 
 def build_specifier(floor: Version) -> str:
     return f">={floor}"
+
+
+def exact_pin(spec: SpecifierSet) -> Version | None:
+    """If spec is a single exact-equality clause (==x.y.z, not a ==x.y.* glob),
+    return that version. Otherwise None (it's a range, or has no floor at all).
+    """
+    specs = list(spec)
+    if len(specs) != 1:
+        return None
+    s = specs[0]
+    if s.operator not in ("==", "===") or ".*" in s.version:
+        return None
+    try:
+        return Version(s.version)
+    except InvalidVersion:
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -292,9 +314,13 @@ def resolve(top_reqs, matrix, include_pre, cache_dir, verbose=False):
     required_by: dict[str, set] = defaultdict(set)
     is_top: set[str] = set()
     listed_floor: dict[str, Version] = {}
-    # Window for top-level requirements with NO version listed at all: the
-    # latest release plus the previous UNVERSIONED_RELEASE_COUNT - 1.
-    unversioned_window: dict[str, tuple[Version, Version]] = {}  # key -> (floor, ceiling)
+    # Top-level requirements pinned exactly (library==X.Y.Z): that exact
+    # version is always mirrored, in addition to the latest-N window below.
+    exact_pins: dict[str, Version] = {}
+    # Latest release + previous UNVERSIONED_RELEASE_COUNT - 1: computed for
+    # top-level requirements with NO version listed at all, and ALSO added
+    # alongside an exact pin so a pinned package still gets recent releases.
+    latest_window: dict[str, tuple[Version, Version]] = {}  # key -> (floor, ceiling)
 
     queue: deque[str] = deque()
     for r in top_reqs:
@@ -304,14 +330,17 @@ def resolve(top_reqs, matrix, include_pre, cache_dir, verbose=False):
         extras_req[key] |= set(r.extras)
         required_by[key].add("(requirements.txt)")
         fl = lower_bound(r.specifier)
-        if fl:
+        pin = exact_pin(r.specifier)
+        if pin:
+            exact_pins[key] = pin
+        elif fl:
             listed_floor[key] = fl
-        else:
+        if pin or not fl:
             meta = pypi_metadata(key, cache_dir)
             if meta:
                 latest = latest_n_versions(meta, UNVERSIONED_RELEASE_COUNT, include_pre)
                 if latest:
-                    unversioned_window[key] = (latest[-1], latest[0])
+                    latest_window[key] = (latest[-1], latest[0])
         queue.append(key)
 
     resolved: dict[str, Version] = {}
@@ -364,24 +393,32 @@ def resolve(top_reqs, matrix, include_pre, cache_dir, verbose=False):
     if not verbose:
         print(file=sys.stderr)  # end the \r progress line
 
-    # Build final allowlist specifiers.
-    #   - explicit version in requirements.txt -> floor forward through latest
-    #   - unlisted top-level requirement       -> latest + previous 3 releases
-    #   - transitive dependency                -> resolved version forward through latest
-    allowlist = {}
+    # Build final allowlist specifiers. Each package may get more than one
+    # line -- bandersnatch's allowlist_release plugin mirrors a release if it
+    # matches ANY line for that package name.
+    #   - exact pin (==X.Y.Z)             -> that version, PLUS the latest window
+    #   - explicit range (e.g. >=X)       -> floor forward through latest
+    #   - unlisted top-level requirement  -> latest + previous 3 releases
+    #   - transitive dependency           -> resolved version forward through latest
+    allowlist: dict[str, list[str]] = defaultdict(list)
     for key, v in sorted(resolved.items()):
-        if key in unversioned_window:
-            floor, ceiling = unversioned_window[key]
-            allowlist[key] = f">={floor},<={ceiling}"
+        if key in exact_pins:
+            allowlist[key].append(f"=={exact_pins[key]}")
+            if key in latest_window:
+                floor, ceiling = latest_window[key]
+                allowlist[key].append(f">={floor},<={ceiling}")
+        elif key in latest_window:
+            floor, ceiling = latest_window[key]
+            allowlist[key].append(f">={floor},<={ceiling}")
         else:
             floor = min(listed_floor.get(key, v), v)
-            allowlist[key] = build_specifier(floor)
+            allowlist[key].append(build_specifier(floor))
 
     lock = {
         "packages": {
             key: {
                 "resolved": str(resolved[key]),
-                "allowlist_specifier": allowlist[key],
+                "allowlist_specifiers": allowlist[key],
                 "extras": sorted(extras_req[key]),
                 "required_by": sorted(required_by[key]),
                 "top_level": key in is_top,
@@ -432,7 +469,8 @@ def main():
 
     with open(args.out_allowlist, "w", encoding="utf-8") as f:
         for name in sorted(allowlist):
-            f.write(f"{name}{allowlist[name]}\n")
+            for specifier in allowlist[name]:
+                f.write(f"{name}{specifier}\n")
     lock["targets"] = {"python_versions": args.python_versions, "platforms": args.platforms,
                        "include_prereleases": args.include_prereleases}
     with open(args.out_lock, "w", encoding="utf-8") as f:
