@@ -131,5 +131,6 @@ echo
 echo "  IMPORTANT: read $WORK/report.txt — it lists anything that could NOT"
 echo "  be resolved and would be missing offline."
 echo
-echo "  Recommended: scripts/verify_mirror.sh   (simulates the offline install)"
+echo "  Recommended: scripts/verify_mirror.sh   (per-Python pip dry-run in"
+echo "               containers against this mirror; needs podman or docker)"
 echo "  Then copy $OUTPUT_DIR to the disconnected host and run scripts/serve_mirror.sh"

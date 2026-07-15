@@ -141,16 +141,28 @@ Everything lives here — there is no second place to edit.
   (fail the build if any requirement can't be resolved).
 - `[mirror]` — `output_dir`, `master`, `workers`, `keep_json`.
 - `[serve]` — `mode` (`static`/`pypiserver`), `port`.
+- `[verify]` — container `runtime`, `image_template`, `jobs`, `port` for the per-Python verification.
 
 ## Verify before you go offline
 
-`scripts/verify_mirror.sh` serves the freshly built mirror on localhost and asks
-`pip install --dry-run` to resolve your requirements using **only** that index —
-no pypi.org. It excludes names already flagged as missing in `report.txt`.
+`scripts/verify_mirror.sh` runs on the **connected** build machine and proves the
+mirror works for **every target Python**. It serves the freshly built mirror
+locally and, for each version in `python_versions`, launches an official
+`python:<ver>` container (podman or docker) that runs `pip install --dry-run`
+for every top-level requirement using **only** the mirror as its index. Each
+library is scored per Python:
 
-Note: pip resolves for the interpreter/OS it runs on. Run `verify_mirror.sh` on
-a host matching each target (or in per-target containers) for full coverage of
-every python/platform combination.
+- `ok` — pip resolved it (and its deps) from the mirror alone.
+- `MISS` — the mirror cannot satisfy it (a real gap; fails the run).
+- `build` — present in the mirror, but building an sdist needs a system build
+  dependency on the target (e.g. `mysqlclient` -> libmysqlclient). Not a mirror
+  gap; noted separately.
+
+It writes one summary, `build/verify-report.txt` (plus `verify-report.json`),
+ending in a clear verdict — **MIRROR FULLY FUNCTIONAL** or not — and exits
+non-zero if any library is `MISS` on any Python. Configure it under `[verify]`
+in `settings.toml` (`runtime`, `image_template`, `jobs`, `port`); env overrides
+`VERIFY_RUNTIME`/`VERIFY_PORT`/`VERIFY_JOBS`/`VERIFY_PY` are also honored.
 
 `scripts/check_closure.py` (run automatically inside `build_mirror.sh`) does a
 build-free, **per-Python** check: for every package, for every version selected

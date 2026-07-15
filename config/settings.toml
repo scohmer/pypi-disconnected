@@ -62,3 +62,16 @@ keep_json = true
 # Used by scripts/serve_mirror.sh on the disconnected host (args can override).
 mode = "static"     # "static" (zero-dependency) or "pypiserver"
 port = 8080
+
+[verify]
+# scripts/verify_mirror.sh runs pip install --dry-run for every top-level
+# requirement inside a container for EACH target Python, against the freshly
+# built mirror -- on the CONNECTED build machine, before you ship it.
+# Container runtime: "auto" (prefer podman, else docker), "podman", or "docker".
+runtime = "auto"
+# Image name template; {py} is replaced by each targets.python_versions entry.
+image_template = "docker.io/library/python:{py}-slim"
+# Parallel pip checks inside each container (speeds up the per-library sweep).
+jobs = 4
+# Local port used to serve the mirror to the containers during verification.
+port = 8099
