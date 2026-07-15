@@ -1,5 +1,7 @@
+*.pyc
+.metacache/
+.pytest_cache/
+__pycache__/
 build/
 mirror/
-.metacache/
-*.pyc
-__pycache__/
+pytest-cache-files-*/

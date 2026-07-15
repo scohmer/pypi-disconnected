@@ -84,6 +84,8 @@ def main():
     ap.add_argument("--output-dir", default="./mirror")
     ap.add_argument("--master", default="https://pypi.org")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--keep-json", dest="keep_json", action="store_true",
+                    help="Mirror PyPI JSON metadata files (default).")
     ap.add_argument("--no-keep-json", dest="keep_json", action="store_false",
                     help="Do not mirror PyPI JSON metadata files.")
     ap.set_defaults(keep_json=True)

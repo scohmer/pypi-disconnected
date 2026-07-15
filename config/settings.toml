@@ -1,22 +1,28 @@
 # Central configuration for the disconnected PyPI mirror builder.
-# Edit this file, then run scripts/build_mirror.sh
+# This is the ONLY file you need to edit.
+#   Build (connected machine):     scripts/build_mirror.sh
+#   Verify before going offline:   scripts/verify_mirror.sh
+#   Serve (disconnected machine):  scripts/serve_mirror.sh
 
 [source]
-# A GitHub repo URL, a blob URL, or a direct raw URL to a requirements.txt.
+# EITHER a local requirements file (takes precedence when set) ...
+requirements_file = "./input/requirements.txt"
+# ... OR a GitHub repo URL, blob URL, or direct raw URL to a requirements.txt.
 # Examples that all work:
 #   https://github.com/psf/requests
 #   https://github.com/psf/requests/blob/main/requirements.txt
 #   https://raw.githubusercontent.com/psf/requests/main/requirements.txt
-github_url = "https://github.com/owner/repo"
+github_url = ""
 # Optional: path to requirements file inside the repo (used only for bare repo URLs).
 requirements_path_in_repo = "requirements.txt"
 
 [versions]
-# How far "forward" from the listed version to allow.
-#   "major" -> >=listed, <next_major   (e.g. requests>=2.28.0,<3)
-#   "minor" -> >=listed, <next_minor   (e.g. requests>=2.28.0,<2.29)
-# Per your choice: forward, capped within the same major series.
-cap_level = "major"
+# How far "forward" from the listed version to mirror.
+#   "none"  -> >=listed            (every version from the listed one FORWARD; default)
+#   "major" -> >=listed, <next_major   (e.g. requests>=2.28.0,<3)   -- optional size lever
+#   "minor" -> >=listed, <next_minor   (e.g. requests>=2.28.0,<2.29) -- optional size lever
+# Default is "none": no upper cap. Use "major"/"minor" only to shrink the mirror.
+cap_level = "none"
 # Include pre-releases (alpha/beta/rc)? Usually false for a stable mirror.
 include_prereleases = false
 
@@ -24,9 +30,19 @@ include_prereleases = false
 # Wheels are downloaded only for these environments. Anything else is excluded
 # to keep the mirror small. Pure-python (py3-none-any) wheels and sdists are
 # always kept.
-python_versions = ["3.9", "3.10", "3.11", "3.12"]
+python_versions = ["3.9", "3.10", "3.11", "3.12", "3.13"]
 # Platforms to KEEP. Supported: linux, windows, macos, freebsd.
 platforms = ["linux", "windows"]
+# CPU architectures of the DISCONNECTED hosts. Drives dependency-marker
+# evaluation (platform_machine). Supported: x86_64, arm64.
+architectures = ["x86_64"]
+
+[resolve]
+# Always included so the disconnected host can bootstrap pip and build sdists.
+ensure_packages = ["pip", "setuptools", "wheel"]
+# Fail the build if any requirement can't be resolved (typos, missing names).
+# false = build anyway, but report.txt lists everything that will be missing.
+strict = false
 
 [mirror]
 # Where bandersnatch writes the mirror on the CONNECTED build machine.
@@ -37,3 +53,8 @@ master = "https://pypi.org"
 workers = 4
 # Keep the PyPI JSON metadata files (recommended; some clients use them).
 keep_json = true
+
+[serve]
+# Used by scripts/serve_mirror.sh on the disconnected host (args can override).
+mode = "static"     # "static" (zero-dependency) or "pypiserver"
+port = 8080

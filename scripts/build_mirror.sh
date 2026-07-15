@@ -2,9 +2,11 @@
 #
 # build_mirror.sh — end-to-end build of the disconnected PyPI mirror.
 # Run this on a CONNECTED machine. Steps:
-#   1. resolve dependency closure from the GitHub requirements.txt
+#   1. resolve dependency closure from requirements.txt (local file or GitHub)
 #   2. generate bandersnatch.conf
 #   3. run bandersnatch to download wheels + build the /simple/ tree
+#
+# All configuration lives in config/settings.toml — edit nothing else.
 #
 # Usage:  scripts/build_mirror.sh [config/settings.toml]
 #
@@ -30,12 +32,16 @@ def emit(k, v):
     if isinstance(v, list):
         v = " ".join(map(str, v))
     print(f'{k}={shlex.quote(str(v))}')
-emit("GITHUB_URL", c["source"]["github_url"])
+emit("REQUIREMENTS_FILE", c["source"].get("requirements_file", ""))
+emit("GITHUB_URL", c["source"].get("github_url", ""))
 emit("PATH_IN_REPO", c["source"].get("requirements_path_in_repo", "requirements.txt"))
 emit("CAP_LEVEL", c["versions"]["cap_level"])
 emit("INCLUDE_PRE", "1" if c["versions"].get("include_prereleases") else "")
 emit("PY_VERSIONS", c["targets"]["python_versions"])
 emit("PLATFORMS", c["targets"]["platforms"])
+emit("ARCHITECTURES", c["targets"].get("architectures", ["x86_64"]))
+emit("ENSURE_PACKAGES", c.get("resolve", {}).get("ensure_packages", ["pip", "setuptools", "wheel"]))
+emit("STRICT", "1" if c.get("resolve", {}).get("strict") else "")
 emit("OUTPUT_DIR", c["mirror"]["output_dir"])
 emit("MASTER", c["mirror"]["master"])
 emit("WORKERS", c["mirror"]["workers"])
@@ -44,29 +50,48 @@ PY
 }
 eval "$(read_settings)"
 
-# Resolve OUTPUT_DIR relative to project root if not absolute.
-case "$OUTPUT_DIR" in
-    /*) : ;;
-    *) OUTPUT_DIR="$ROOT/${OUTPUT_DIR#./}" ;;
-esac
+if [ -z "$REQUIREMENTS_FILE" ] && [ -z "$GITHUB_URL" ]; then
+    echo "ERROR: set source.requirements_file or source.github_url in $SETTINGS" >&2
+    exit 1
+fi
+
+# Resolve paths relative to project root if not absolute.
+abspath() { case "$1" in /*) echo "$1" ;; *) echo "$ROOT/${1#./}" ;; esac; }
+OUTPUT_DIR="$(abspath "$OUTPUT_DIR")"
 
 echo "==> [1/3] Resolving dependency closure"
-PRE_FLAG=()
-[ -n "$INCLUDE_PRE" ] && PRE_FLAG=(--include-prereleases)
+SOURCE_ARGS=()
+if [ -n "$REQUIREMENTS_FILE" ]; then
+    REQUIREMENTS_FILE="$(abspath "$REQUIREMENTS_FILE")"
+    SOURCE_ARGS=(--requirements-file "$REQUIREMENTS_FILE")
+else
+    SOURCE_ARGS=(--github-url "$GITHUB_URL" --path-in-repo "$PATH_IN_REPO")
+fi
+EXTRA_FLAGS=()
+[ -n "$INCLUDE_PRE" ] && EXTRA_FLAGS+=(--include-prereleases)
+[ -n "$STRICT" ] && EXTRA_FLAGS+=(--strict)
 python3 "$HERE/resolve_deps.py" \
-    --github-url "$GITHUB_URL" \
-    --path-in-repo "$PATH_IN_REPO" \
+    "${SOURCE_ARGS[@]}" \
     --cap-level "$CAP_LEVEL" \
     --python-versions $PY_VERSIONS \
     --platforms $PLATFORMS \
-    "${PRE_FLAG[@]}" \
+    --architectures $ARCHITECTURES \
+    --ensure-packages $ENSURE_PACKAGES \
+    "${EXTRA_FLAGS[@]}" \
     --out-allowlist "$WORK/allowlist.txt" \
     --out-lock "$WORK/lock.json" \
+    --out-report "$WORK/report.txt" \
     --cache-dir "$WORK/.metacache"
 
+echo "==> [1b/3] Checking dependency-closure completeness"
+python3 "$HERE/check_closure.py" "$WORK/lock.json" "$WORK/.metacache" || {
+    echo "WARNING: closure check reported missing dependencies (see above)." >&2
+    echo "         The mirror may be incomplete for a full offline install." >&2
+}
+
 echo "==> [2/3] Generating bandersnatch.conf"
-KEEP_JSON_FLAG=()
-[ -n "$KEEP_JSON" ] && KEEP_JSON_FLAG=(--keep-json)
+KEEP_JSON_FLAG=(--keep-json)
+[ -z "$KEEP_JSON" ] && KEEP_JSON_FLAG=(--no-keep-json)
 python3 "$HERE/generate_bandersnatch_conf.py" \
     --allowlist "$WORK/allowlist.txt" \
     --output-dir "$OUTPUT_DIR" \
@@ -85,6 +110,18 @@ fi
 mkdir -p "$OUTPUT_DIR"
 bandersnatch --config "$WORK/bandersnatch.conf" mirror
 
+# Ship provenance with the mirror so the disconnected side can audit/verify.
+mkdir -p "$OUTPUT_DIR/meta"
+cp "$WORK/allowlist.txt" "$WORK/lock.json" "$WORK/report.txt" "$OUTPUT_DIR/meta/"
+if [ -n "$REQUIREMENTS_FILE" ]; then
+    cp "$REQUIREMENTS_FILE" "$OUTPUT_DIR/meta/requirements.txt"
+fi
+
 echo
 echo "Done. Mirror is at: $OUTPUT_DIR"
-echo "Copy that directory to the disconnected host and run scripts/serve_mirror.sh there."
+echo
+echo "  IMPORTANT: read $WORK/report.txt — it lists anything that could NOT"
+echo "  be resolved and would be missing offline."
+echo
+echo "  Recommended: scripts/verify_mirror.sh   (simulates the offline install)"
+echo "  Then copy $OUTPUT_DIR to the disconnected host and run scripts/serve_mirror.sh"

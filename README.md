@@ -1,140 +1,213 @@
 # PyPI-disconnected
 
 Build a self-hosted, **offline** PyPI `/simple/` repository from a project's
-`requirements.txt`. Point it at a GitHub repo; it resolves the full transitive
-dependency closure (from each listed version *forward*, capped within the same
-major series), mirrors the wheels and PEP 503 metadata for your target
-platforms and Python versions, and produces a directory you can copy to an
-air-gapped host and serve.
+`requirements.txt`. Point it at a local file or a GitHub repo; it resolves the
+full transitive dependency closure (from each listed version *forward*, uncapped by
+default), mirrors
+the wheels and PEP 503 metadata for your target platforms, Python versions, and
+CPU architectures, verifies that nothing is missing, and produces a directory
+you can copy to an air-gapped host and serve.
+
+## Push-button workflow
+
+Everything is driven by **one file**: `config/settings.toml`.
+
+```bash
+# 1. CONNECTED build machine
+pip install -r requirements-tooling.txt     # bandersnatch, packaging, ...
+$EDITOR config/settings.toml                 # set the source + targets (only edit here)
+scripts/build_mirror.sh                      # resolve -> closure-check -> config -> mirror
+scripts/verify_mirror.sh                     # prove `pip install -r ...` works offline
+
+# 2. copy ./mirror to the DISCONNECTED host, then there:
+scripts/serve_mirror.sh                      # reads settings.toml for mode/port
+```
+
+Clients on the air-gapped network:
+
+```bash
+pip install --index-url http://<host>:8080/simple/ --trusted-host <host> -r requirements.txt
+# or make it permanent:
+pip config set global.index-url http://<host>:8080/simple/
+pip config set global.trusted-host <host>
+```
 
 ## How it works
 
 ```
-GitHub requirements.txt
-        │
-        ▼
- resolve_deps.py ──────────► allowlist.txt  (PEP 440 specifiers)
-   • fetch requirements                       + lock.json (audit/reproducibility)
-   • cap versions (>=listed, <next major)
-   • walk transitive deps via PyPI JSON API
-   • evaluate markers across target matrix
-        │
-        ▼
- generate_bandersnatch_conf.py ─► bandersnatch.conf
-        │
-        ▼
- bandersnatch mirror  ──────────► mirror/web/simple/   (PEP 503 tree)
-   (CONNECTED machine)            mirror/web/packages/  (wheels + sdists)
-        │
-        ▼   copy directory to air-gapped host
-        ▼
- serve_mirror.sh  ─────────────► http://host:8080/simple/
+requirements.txt  (local file OR GitHub URL; -r includes followed)
+        |
+        v
+ resolve_deps.py ----------> build/allowlist.txt   (PEP 440 specifiers)
+   * cap versions             build/lock.json       (audit / reproducibility)
+   * walk transitive deps     build/report.txt      (LOUD: anything missing)
+   * evaluate markers across python x OS x ARCH
+   * conflicts -> keep newest + widen range (never drop a package)
+        |
+        v
+ check_closure.py  --------> asserts every dependency edge is satisfied
+        |
+        v
+ generate_bandersnatch_conf.py -> build/bandersnatch.conf
+        |
+        v
+ bandersnatch mirror  ------> mirror/web/simple/    (PEP 503 tree)
+   (CONNECTED machine)        mirror/web/packages/  (wheels + sdists)
+        |
+        v   copy mirror/ to the air-gapped host
+        v
+ serve_mirror.sh  ---------> http://host:8080/simple/
    (DISCONNECTED machine)
 ```
 
-The build runs on a **connected** machine (bandersnatch needs PyPI access). The
-output directory is then transferred to the **disconnected** host, where it is
-served as static files — no internet required.
+`resolve_deps.py` needs network access to PyPI (run it on the connected
+machine). It only reads metadata; bandersnatch does the file downloads.
+
+## What was fixed (why offline installs now succeed)
+
+The previous version silently left holes in the mirror. The important fixes:
+
+1. **Every target Python resolves independently (3.9-3.13).** A package's newest
+   release often drops old-Python support (e.g. newest `numpy` needs >=3.11), so
+   on 3.9 pip installs an *older* version with *different* dependencies. The
+   resolver now selects the newest `requires_python`-compatible version **per
+   target Python** and walks each distinct version's dependency tree, so the
+   mirror contains a working version — and its deps — for every interpreter.
+   When an accumulated constraint has no version installable on a given Python,
+   it falls back to the newest version that Python can use (as pip would).
+2. **Allowlist range now contains the resolved version.** The cap used to be
+   the next major of the *listed floor*, so `cryptography>=1.4` became
+   `>=1.4,<2` — which excluded the version actually resolved (48.x) and every
+   version its dependants needed. That mandatory cap has been removed: by
+   default the allowlist is uncapped (`>=floor`), and the floor widens **down**
+   to the lowest version any dependant requires. So conflict-heavy packages
+   (`cryptography`, `wcwidth`, `arpy`, `pillow`, `filelock`,
+   `typing-extensions`) include every version some part of the graph asks for.
+3. **Complete, architecture-aware marker environments.** Dependency markers are
+   evaluated against the full matrix of python x OS x **CPU architecture**
+   (`platform_machine` is set explicitly). Previously `platform_machine`-guarded
+   deps (e.g. the `nvidia-*-cu12` stack pulled by `torch`) could be dropped
+   because evaluation fell back to the build machine's values. Unevaluable
+   markers are treated as *true* (mirror a superset rather than risk a hole).
+4. **Conflicts never drop a package.** When accumulated constraints are
+   mutually unsatisfiable, the resolver keeps the newest release, widens the
+   allowlist to cover the conflicting lower bounds, and records it in
+   `report.txt` instead of skipping the package.
+5. **`-r`/`-c` includes are followed** (recursively, relative to the source).
+6. **Build essentials seeded.** `pip`, `setuptools`, `wheel` are always
+   included so the disconnected host can bootstrap and build sdists.
+7. **A loud report + a real closure check.** `report.txt` lists typos
+   (names not on PyPI), unmirrorable lines, conflicts, and sdist-only packages
+   with no declared metadata. `check_closure.py` then proves every dependency
+   edge is satisfied by the closure.
 
 ## Design decisions
 
-**Version coverage — "forward, capped to the major series."** For each
-top-level package the lower bound is the version listed in `requirements.txt`;
-the upper bound is the next major version (e.g. `requests==2.28.0` →
-`requests>=2.28.0,<3`). Transitive dependencies are capped the same way from
-their resolved version. This is configurable (`cap_level = "major"` or
-`"minor"` in `settings.toml`). Note for `0.x` packages, a "major" cap is wide —
-switch to `minor` if those projects matter to you.
+**Version coverage — "forward, uncapped by default."** For each package the
+floor is the version listed in `requirements.txt` (or the lowest version any
+dependant requires, whichever is lower). By default (`cap_level = "none"`) there
+is **no upper bound** — every version from the floor forward is mirrored. The
+mandatory major-version cap that an earlier version enforced has been removed.
+`cap_level = "major"` or `"minor"` remain available as *optional* size levers
+that bound the range to the resolved version's series, but nothing caps by
+default.
 
-**Targets are explicit.** Wheels are mirrored only for the platforms
-(`linux`, `windows`) and Python versions (3.9–3.12) you declare. Pure-Python
-(`py3-none-any`) wheels and sdists are always kept. This is the main lever on
-mirror size — every extra platform/interpreter multiplies it.
+**Targets are explicit.** Wheels are mirrored only for the platforms, Python
+versions, and architectures you declare. Pure-Python (`py3-none-any`) wheels and
+sdists are always kept. This is the main lever on mirror size.
 
-**bandersnatch does the mirroring.** It produces a PEP 503 compliant tree with
-per-file SHA256 hashes and (with `json = true`) the JSON metadata, and handles
-yanked releases and edge cases. We only generate its allowlist and platform
-filters — we don't hand-roll downloading or metadata generation.
+**bandersnatch does the mirroring.** It produces a PEP 503 tree with per-file
+SHA256 hashes and (with `json = true`) JSON metadata. We only generate its
+allowlist and platform filters.
 
-**Wheels preferred over sdists.** Wheels install without a build step, which an
-air-gapped host can't easily perform (it would need build backends and their
-deps too). Packages that ship sdist-only still come through.
+**Reproducible.** `lock.json` records every resolved version, the allowlist
+specifier emitted, and which package required it. It is also copied into
+`mirror/meta/` so the disconnected side can audit and re-verify.
 
-**Reproducible.** `lock.json` records every resolved version, the specifier
-emitted, and which package required it — so you can diff, audit, and re-run.
+## Configuration (`config/settings.toml`)
 
-## Usage
+Everything lives here — there is no second place to edit.
 
-On the **connected** build machine:
+- `[source]` — `requirements_file` (local, takes precedence) **or** `github_url`
+  (repo / blob / raw). `-r` includes inside the file are followed.
+- `[versions]` — `cap_level` (`none` default = forward/uncapped; `major`/`minor` optionally shrink the mirror), `include_prereleases`.
+- `[targets]` — `python_versions` (default `3.9`-`3.13`; each is resolved
+  independently), `platforms` (`linux`/`windows`/`macos`/`freebsd`),
+  `architectures` (`x86_64`/`arm64`).
+- `[resolve]` — `ensure_packages` (default pip/setuptools/wheel), `strict`
+  (fail the build if any requirement can't be resolved).
+- `[mirror]` — `output_dir`, `master`, `workers`, `keep_json`.
+- `[serve]` — `mode` (`static`/`pypiserver`), `port`.
+
+## Verify before you go offline
+
+`scripts/verify_mirror.sh` serves the freshly built mirror on localhost and asks
+`pip install --dry-run` to resolve your requirements using **only** that index —
+no pypi.org. It excludes names already flagged as missing in `report.txt`.
+
+Note: pip resolves for the interpreter/OS it runs on. Run `verify_mirror.sh` on
+a host matching each target (or in per-target containers) for full coverage of
+every python/platform combination.
+
+`scripts/check_closure.py` (run automatically inside `build_mirror.sh`) does a
+build-free, **per-Python** check: for every package, for every version selected
+across Python 3.9-3.13, it confirms each marker-active dependency is present in
+the closure AND that the mirror actually contains a version installable on the
+Pythons that need it. It exits non-zero on any missing dependency or coverage
+gap.
+
+## Running pieces individually
 
 ```bash
-pip install -r requirements-tooling.txt        # bandersnatch, packaging, ...
-$EDITOR config/settings.toml                    # set github_url + targets
-scripts/build_mirror.sh                         # resolve → config → mirror
-```
-
-This writes `build/allowlist.txt`, `build/lock.json`, `build/bandersnatch.conf`,
-and the mirror itself to `mirror/` (per `settings.toml`).
-
-Copy `mirror/` to the **disconnected** host, then:
-
-```bash
-scripts/serve_mirror.sh static  ./mirror  8080      # zero-dependency HTTP
-# or
-scripts/serve_mirror.sh pypiserver ./mirror 8080    # via pypiserver
-```
-
-Clients on the air-gapped network install with:
-
-```bash
-pip install --index-url http://<host>:8080/simple/ <package>
-# or make it permanent:  pip config set global.index-url http://<host>:8080/simple/
-#                        pip config set global.trusted-host <host>
-```
-
-### Running pieces individually
-
-```bash
-# Resolve only (writes allowlist.txt + lock.json):
+# Resolve only:
 python3 scripts/resolve_deps.py \
-    --github-url https://github.com/owner/repo \
+    --requirements-file input/requirements.txt \
     --python-versions 3.9 3.10 3.11 3.12 \
-    --platforms linux windows \
-    --cap-level major
+    --platforms linux windows --architectures x86_64 \
+    --cap-level major --strict \
+    --out-allowlist build/allowlist.txt \
+    --out-lock build/lock.json --out-report build/report.txt
+
+# (or --github-url https://github.com/owner/repo)
+
+# Check the closure:
+python3 scripts/check_closure.py build/lock.json build/.metacache
 
 # Generate config from an allowlist:
 python3 scripts/generate_bandersnatch_conf.py \
-    --allowlist allowlist.txt --output-dir ./mirror \
+    --allowlist build/allowlist.txt --output-dir ./mirror \
     --platforms linux windows --python-versions 3.9 3.10 3.11 3.12
 ```
-
-You can also resolve from a local file with `--requirements-file path.txt`.
 
 ## Layout
 
 ```
-config/settings.toml                  central config
-scripts/resolve_deps.py               GitHub → dependency closure → allowlist + lock
-scripts/generate_bandersnatch_conf.py allowlist + targets → bandersnatch.conf
+config/settings.toml                  the ONLY file you edit
+input/requirements.txt                default local source (or point at GitHub)
+scripts/resolve_deps.py               source -> dependency closure -> allowlist + lock + report
+scripts/check_closure.py              proves the closure is complete (no missing deps)
+scripts/generate_bandersnatch_conf.py allowlist + targets -> bandersnatch.conf
 scripts/build_mirror.sh               orchestrates the full build (connected)
+scripts/verify_mirror.sh              simulates the offline install (connected)
 scripts/serve_mirror.sh               serves the mirror (disconnected)
 requirements-tooling.txt              build-machine dependencies
 build/                                generated artifacts (gitignored)
-mirror/                               the mirror output (gitignored)
+mirror/                               the mirror output, incl. meta/ (gitignored)
 ```
 
 ## Limitations & notes
 
 - `resolve_deps.py` needs network access to PyPI; run it on the connected machine.
-- Nested `-r other.txt` includes in requirements files are skipped with a warning
-  (only the fetched file is parsed). Resolve those separately if needed.
-- The resolver picks the newest version satisfying constraints to read
-  dependency metadata; if two packages need conflicting majors, both ranges are
-  allowlisted (bandersnatch mirrors a superset, which is fine for a mirror — pip
-  resolves the exact set at install time on the client).
-- `exclude_platform` filters by OS and Python *minor* version tags. Some wheels
-  with unusual tags may slip through; this only affects mirror size, not
-  correctness.
-- Verify the `bandersnatch` filter plugin names against your installed version
-  (`allowlist_project`, `allowlist_release`, `exclude_platform` are current as of
-  6.x/7.x).
+- **sdist-only packages with no declared metadata** (listed in `report.txt`) can
+  hide runtime dependencies in `setup.py`. pip must *build* them to learn their
+  deps, which needs their system build prerequisites on the target
+  (e.g. `mysqlclient` needs libmysqlclient headers, `mod_wsgi` needs Apache
+  headers). Review that list.
+- **Genuine conflicts in your requirements are reported, not hidden.** If two
+  packages demand incompatible versions of the same dependency (e.g.
+  `termscraper` needs `wcwidth==0.2.5` while `prettytable` needs `>=0.3.5`),
+  no single `pip install -r` can satisfy both — online or offline. The mirror
+  still contains every needed version so any resolvable subset installs.
+- Verify `bandersnatch` filter plugin names against your installed version
+  (`allowlist_project`, `allowlist_release`, `exclude_platform` are current as
+  of 6.x/7.x).
