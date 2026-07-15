@@ -28,6 +28,7 @@ PYPI_JSON = "https://pypi.org/pypi/{name}/json"
 USER_AGENT = "pypi-disconnected-resolver/2.0"
 DEFAULT_ENSURE = ["pip", "setuptools", "wheel"]
 FETCH_WORKERS = 16
+DEFAULT_WINDOW = 4  # per-Python: keep the latest N compatible versions
 
 
 def new_report() -> dict:
@@ -373,6 +374,29 @@ def python_ok(requires_python, py):
     return False
 
 
+def latest_n_for_python(meta, spec, include_pre, py, n):
+    """The newest `n` versions that satisfy `spec` AND install on Python `py`
+    (descending). This realizes 'the latest N versions compatible with each
+    configured Python.'"""
+    vs = []
+    for vstr, files in meta.get("releases", {}).items():
+        if not files or all(f.get("yanked") for f in files):
+            continue
+        try:
+            v = Version(vstr)
+        except InvalidVersion:
+            continue
+        if v.is_prerelease and not include_pre:
+            continue
+        if not spec.contains(v, prereleases=include_pre):
+            continue
+        if not python_ok(release_requires_python(meta, vstr), py):
+            continue
+        vs.append(v)
+    vs.sort(reverse=True)
+    return vs[:n]
+
+
 def best_version_for_python(meta, spec, include_pre, py):
     """Newest version satisfying `spec` AND installable on Python `py`
     (per its requires_python). This is what pip would pick on that Python."""
@@ -396,7 +420,7 @@ def best_version_for_python(meta, spec, include_pre, py):
 
 
 def resolve(top_reqs, matrix, python_versions, cap_level, include_pre,
-            cache_dir, report=None, verbose=False):
+            cache_dir, window_size=DEFAULT_WINDOW, report=None, verbose=False):
     """Resolve the closure so that EVERY target Python can install everything.
 
     For each package we select the newest version that is (a) allowed by the
@@ -434,6 +458,7 @@ def resolve(top_reqs, matrix, python_versions, cap_level, include_pre,
 
     seen_states = set()   # (key, version, extras) already dep-walked
     known = set()         # keys ever processed
+    edges = []            # (dep_key, dep_specifier_str, frozenset(pythons)) for coverage repair
 
     while queue:
         wave = list(dict.fromkeys(queue))
@@ -453,20 +478,27 @@ def resolve(top_reqs, matrix, python_versions, cap_level, include_pre,
             spec = constraints[key]
             picks = {}  # version -> set(py)
             for py in python_versions:
-                v = best_version_for_python(meta, spec, include_pre, py)
-                if v is None:
-                    # No version under the accumulated constraints is installable
-                    # on this Python (the constraint likely came from a path that
+                if cap_level == "window":
+                    vlist = latest_n_for_python(meta, spec, include_pre, py, window_size)
+                else:
+                    v = best_version_for_python(meta, spec, include_pre, py)
+                    vlist = [v] if v is not None else []
+                if not vlist:
+                    # No version under the accumulated constraints installs on
+                    # this Python (the constraint likely came from a path that
                     # only applies to OTHER Pythons). Fall back to the newest
-                    # version that supports this Python so pip -- which resolves
-                    # per interpreter -- can still install it here.
-                    relaxed = best_version_for_python(meta, SpecifierSet(), include_pre, py)
-                    if relaxed is not None:
-                        note = f"{key} (py {py}): '{spec}' has no py{py} version; mirrored {relaxed}"
+                    # version(s) this Python supports so pip -- which resolves
+                    # per interpreter -- can still install here.
+                    if cap_level == "window":
+                        vlist = latest_n_for_python(meta, SpecifierSet(), include_pre, py, window_size)
+                    else:
+                        rv = best_version_for_python(meta, SpecifierSet(), include_pre, py)
+                        vlist = [rv] if rv is not None else []
+                    if vlist:
+                        note = f"{key} (py {py}): '{spec}' has no py{py} version; mirrored {vlist[0]}"
                         if note not in report["py_relaxed"]:
                             report["py_relaxed"].append(note)
-                        v = relaxed
-                if v is not None:
+                for v in vlist:
                     picks.setdefault(v, set()).add(py)
             if not picks:
                 # Unsatisfiable on every target Python: keep newest, report it.
@@ -536,6 +568,7 @@ def resolve(top_reqs, matrix, python_versions, cap_level, include_pre,
                 if not marker_true_for_any(dep, sub_matrix, extras_req[key]):
                     continue
                 dkey = canonicalize_name(dep.name)
+                edges.append((dkey, str(dep.specifier), frozenset(pys)))
                 before = (str(constraints[dkey]), frozenset(extras_req[dkey]))
                 constraints[dkey] &= dep.specifier
                 dfl = lower_bound(dep.specifier)
@@ -550,15 +583,48 @@ def resolve(top_reqs, matrix, python_versions, cap_level, include_pre,
     if not verbose:
         print(file=sys.stderr)
 
+    # Coverage repair (window mode): a mirrored version may require a specific
+    # older dependency version that falls outside that dependency's own window
+    # (e.g. angr pinning capstone==X). For every dependency edge, ensure the
+    # exact version each parent needs -- per Python -- is mirrored too.
+    must_include = defaultdict(set)
+    if cap_level == "window":
+        for dkey, spec_str, pys in set(edges):
+            if dkey not in versions_by_pkg:
+                continue
+            meta = pypi_metadata(dkey, cache_dir)
+            if not meta:
+                continue
+            try:
+                spec = SpecifierSet(spec_str)
+            except Exception:  # noqa: BLE001
+                continue
+            for py in pys:
+                v = best_version_for_python(meta, spec, include_pre, py)
+                if v is not None:
+                    must_include[dkey].add(v)
+
     allowlist = {}
     for key, vset in sorted(versions_by_pkg.items()):
         vmax = max(vset)
-        # Floor = the OLDEST version any target Python needs (or any specifier
-        # asks for), so every interpreter finds a working version. No upper cap
-        # by default; 'major'/'minor' bound to the newest pick's series.
-        floor = min([floor_seen.get(key, vmax)] + list(vset))
-        cap = cap_for(vmax, cap_level)
-        allowlist[key] = f">={floor},{cap}" if cap else f">={floor}"
+        vmin = min(vset)
+        if cap_level == "window":
+            # The per-Python window (latest N compatible each), as a bounded
+            # span, PLUS explicit pins for any closure-required version outside
+            # it (coverage repair). bandersnatch's allowlist_release mirrors a
+            # release matching ANY line for the package.
+            specs = [f">={vmin},<={vmax}" if vmin != vmax else f"=={vmax}"]
+            for v in sorted(must_include.get(key, ())):
+                if not (vmin <= v <= vmax):
+                    specs.append(f"=={v}")
+            allowlist[key] = specs
+        else:
+            # Floor = the OLDEST version any target Python needs (or any
+            # specifier asks for), so every interpreter finds a working version.
+            # 'none' = no upper cap; 'major'/'minor' bound to the newest series.
+            floor = min([floor_seen.get(key, vmax)] + list(vset))
+            cap = cap_for(vmax, cap_level)
+            allowlist[key] = [f">={floor},{cap}" if cap else f">={floor}"]
 
     lock = {
         "packages": {
@@ -567,7 +633,7 @@ def resolve(top_reqs, matrix, python_versions, cap_level, include_pre,
                 "versions": [str(x) for x in sorted(versions_by_pkg[key])],
                 "per_python": {str(v): sorted(picks_by_pkg[key][v])
                                for v in sorted(picks_by_pkg[key])},
-                "allowlist_specifier": allowlist[key],
+                "allowlist_specifiers": allowlist[key],
                 "extras": sorted(extras_req[key]),
                 "required_by": sorted(required_by[key]),
                 "top_level": key in is_top,
@@ -584,9 +650,15 @@ def main():
     ap.add_argument("--github-url")
     ap.add_argument("--requirements-file")
     ap.add_argument("--path-in-repo", default="requirements.txt")
-    ap.add_argument("--cap-level", default="none", choices=["none", "major", "minor"],
-                    help="Upper bound on mirrored versions. 'none' (default) = from the "
-                         "listed version forward, no cap. 'major'/'minor' shrink the mirror.")
+    ap.add_argument("--cap-level", default="window",
+                    choices=["window", "none", "major", "minor"],
+                    help="How many versions to mirror. 'window' (default) = the latest "
+                         "--window-size versions compatible with EACH target Python. "
+                         "'none' = from the listed version forward (no cap). "
+                         "'major'/'minor' = forward but bounded to the resolved series.")
+    ap.add_argument("--window-size", type=int, default=DEFAULT_WINDOW,
+                    help="With --cap-level window: latest N compatible versions per "
+                         "Python (default %(default)s).")
     ap.add_argument("--python-versions", nargs="+", default=["3.9", "3.10", "3.11", "3.12", "3.13"])
     ap.add_argument("--platforms", nargs="+", default=["linux", "windows"])
     ap.add_argument("--architectures", nargs="+", default=["x86_64"], choices=list(ARCH_MACHINES))
@@ -623,15 +695,21 @@ def main():
 
     allowlist, lock = resolve(top, matrix, args.python_versions, args.cap_level,
                               args.include_prereleases, args.cache_dir,
+                              window_size=args.window_size,
                               report=report, verbose=args.verbose)
 
     with open(args.out_allowlist, "w", encoding="utf-8") as f:
         for name in sorted(allowlist):
-            f.write(f"{name}{allowlist[name]}\n")
+            specs = allowlist[name]
+            if isinstance(specs, str):
+                specs = [specs]
+            for spec in specs:
+                f.write(f"{name}{spec}\n")
     lock["targets"] = {"python_versions": args.python_versions,
                        "platforms": args.platforms,
                        "architectures": args.architectures,
                        "cap_level": args.cap_level,
+                       "window_size": args.window_size,
                        "include_prereleases": args.include_prereleases,
                        "ensure_packages": args.ensure_packages}
     with open(args.out_lock, "w", encoding="utf-8") as f:

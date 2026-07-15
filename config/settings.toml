@@ -17,12 +17,16 @@ github_url = ""
 requirements_path_in_repo = "requirements.txt"
 
 [versions]
-# How far "forward" from the listed version to mirror.
-#   "none"  -> >=listed            (every version from the listed one FORWARD; default)
-#   "major" -> >=listed, <next_major   (e.g. requests>=2.28.0,<3)   -- optional size lever
-#   "minor" -> >=listed, <next_minor   (e.g. requests>=2.28.0,<2.29) -- optional size lever
-# Default is "none": no upper cap. Use "major"/"minor" only to shrink the mirror.
-cap_level = "none"
+# How many versions of each package to mirror.
+#   "window" -> the latest `window_size` versions compatible with EACH Python in
+#               [targets].python_versions (default; guarantees every interpreter
+#               has recent, installable versions while keeping the mirror small).
+#   "none"   -> >=listed, no upper cap (every version from the listed one forward).
+#   "major"  -> >=listed, <next_major  (forward, bounded to the resolved series).
+#   "minor"  -> >=listed, <next_minor.
+cap_level = "window"
+# Used only when cap_level = "window": latest N compatible versions per Python.
+window_size = 4
 # Include pre-releases (alpha/beta/rc)? Usually false for a stable mirror.
 include_prereleases = false
 

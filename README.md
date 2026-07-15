@@ -70,11 +70,14 @@ The previous version silently left holes in the mirror. The important fixes:
 1. **Every target Python resolves independently (3.9-3.13).** A package's newest
    release often drops old-Python support (e.g. newest `numpy` needs >=3.11), so
    on 3.9 pip installs an *older* version with *different* dependencies. The
-   resolver now selects the newest `requires_python`-compatible version **per
-   target Python** and walks each distinct version's dependency tree, so the
-   mirror contains a working version — and its deps — for every interpreter.
-   When an accumulated constraint has no version installable on a given Python,
-   it falls back to the newest version that Python can use (as pip would).
+   resolver selects the latest N versions **compatible with each target Python**
+   (`requires_python`-aware) and walks each distinct version's dependency tree,
+   so the mirror carries a working version — and its deps — for every
+   interpreter. It then runs **coverage repair**: any specific version the
+   closure requires but the window missed (e.g. a transitive `==` pin like
+   `capstone==5.0.0.post1`) is added as an explicit allowlist pin, so windowing
+   never breaks an install. Verified: 0 missing deps and 0 coverage gaps for the
+   version pip picks first, across 3.9-3.13.
 2. **Allowlist range now contains the resolved version.** The cap used to be
    the next major of the *listed floor*, so `cryptography>=1.4` became
    `>=1.4,<2` — which excluded the version actually resolved (48.x) and every
@@ -103,14 +106,14 @@ The previous version silently left holes in the mirror. The important fixes:
 
 ## Design decisions
 
-**Version coverage — "forward, uncapped by default."** For each package the
-floor is the version listed in `requirements.txt` (or the lowest version any
-dependant requires, whichever is lower). By default (`cap_level = "none"`) there
-is **no upper bound** — every version from the floor forward is mirrored. The
-mandatory major-version cap that an earlier version enforced has been removed.
-`cap_level = "major"` or `"minor"` remain available as *optional* size levers
-that bound the range to the resolved version's series, but nothing caps by
-default.
+**Version coverage — "latest N per Python, then repair."** By default
+(`cap_level = "window"`, `window_size = 4`) the mirror keeps, for each package,
+the latest `window_size` versions **compatible with each configured Python** —
+so every interpreter has recent, installable choices while the mirror stays
+small. Coverage repair then adds any extra version the dependency closure needs
+but the window missed. Alternatives (optional size/shape levers): `none` mirrors
+everything from the listed version forward (largest, simplest); `major`/`minor`
+bound that forward range to the resolved version's series.
 
 **Targets are explicit.** Wheels are mirrored only for the platforms, Python
 versions, and architectures you declare. Pure-Python (`py3-none-any`) wheels and
@@ -130,7 +133,7 @@ Everything lives here — there is no second place to edit.
 
 - `[source]` — `requirements_file` (local, takes precedence) **or** `github_url`
   (repo / blob / raw). `-r` includes inside the file are followed.
-- `[versions]` — `cap_level` (`none` default = forward/uncapped; `major`/`minor` optionally shrink the mirror), `include_prereleases`.
+- `[versions]` — `cap_level` (`window` default = latest `window_size` per Python; `none`/`major`/`minor` alternatives), `window_size`, `include_prereleases`.
 - `[targets]` — `python_versions` (default `3.9`-`3.13`; each is resolved
   independently), `platforms` (`linux`/`windows`/`macos`/`freebsd`),
   `architectures` (`x86_64`/`arm64`).

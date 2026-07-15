@@ -116,3 +116,29 @@ class TestBestVersionForPython(unittest.TestCase):
         from packaging.specifiers import SpecifierSet
         v = rd.best_version_for_python(self._meta(), SpecifierSet(), False, "3.9")
         self.assertEqual(str(v), "1.26.0")
+
+
+class TestWindowMode(unittest.TestCase):
+    def _meta(self):
+        return {"releases": {
+            "1.0.0": [{"requires_python": ">=3.9", "yanked": False, "packagetype": "bdist_wheel"}],
+            "1.1.0": [{"requires_python": ">=3.9", "yanked": False, "packagetype": "bdist_wheel"}],
+            "1.2.0": [{"requires_python": ">=3.10", "yanked": False, "packagetype": "bdist_wheel"}],
+            "1.3.0": [{"requires_python": ">=3.10", "yanked": False, "packagetype": "bdist_wheel"}],
+        }}
+
+    def test_latest_n_for_python_respects_requires_python(self):
+        from packaging.specifiers import SpecifierSet
+        # py3.9 can only use 1.0/1.1 -> latest 4 compatible = those two
+        got = rd.latest_n_for_python(self._meta(), SpecifierSet(), False, "3.9", 4)
+        self.assertEqual([str(v) for v in got], ["1.1.0", "1.0.0"])
+
+    def test_latest_n_for_python_counts(self):
+        from packaging.specifiers import SpecifierSet
+        got = rd.latest_n_for_python(self._meta(), SpecifierSet(), False, "3.12", 2)
+        self.assertEqual([str(v) for v in got], ["1.3.0", "1.2.0"])
+
+    def test_window_size_limits(self):
+        from packaging.specifiers import SpecifierSet
+        got = rd.latest_n_for_python(self._meta(), SpecifierSet(), False, "3.12", 1)
+        self.assertEqual([str(v) for v in got], ["1.3.0"])

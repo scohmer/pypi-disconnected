@@ -36,6 +36,7 @@ emit("REQUIREMENTS_FILE", c["source"].get("requirements_file", ""))
 emit("GITHUB_URL", c["source"].get("github_url", ""))
 emit("PATH_IN_REPO", c["source"].get("requirements_path_in_repo", "requirements.txt"))
 emit("CAP_LEVEL", c["versions"]["cap_level"])
+emit("WINDOW_SIZE", c["versions"].get("window_size", 4))
 emit("INCLUDE_PRE", "1" if c["versions"].get("include_prereleases") else "")
 emit("PY_VERSIONS", c["targets"]["python_versions"])
 emit("PLATFORMS", c["targets"]["platforms"])
@@ -60,6 +61,9 @@ abspath() { case "$1" in /*) echo "$1" ;; *) echo "$ROOT/${1#./}" ;; esac; }
 OUTPUT_DIR="$(abspath "$OUTPUT_DIR")"
 
 echo "==> [1/3] Resolving dependency closure"
+# Ported ops fix: clear cached PyPI metadata so every build sees current data
+# (prevents a stale resolver cache from producing a stale/incomplete mirror).
+rm -rf "$WORK/.metacache"
 SOURCE_ARGS=()
 if [ -n "$REQUIREMENTS_FILE" ]; then
     REQUIREMENTS_FILE="$(abspath "$REQUIREMENTS_FILE")"
@@ -73,6 +77,7 @@ EXTRA_FLAGS=()
 python3 "$HERE/resolve_deps.py" \
     "${SOURCE_ARGS[@]}" \
     --cap-level "$CAP_LEVEL" \
+    --window-size "$WINDOW_SIZE" \
     --python-versions $PY_VERSIONS \
     --platforms $PLATFORMS \
     --architectures $ARCHITECTURES \
@@ -108,6 +113,9 @@ if ! command -v bandersnatch >/dev/null 2>&1; then
     exit 1
 fi
 mkdir -p "$OUTPUT_DIR"
+# Ported ops fix: drop bandersnatch's incremental state so a re-run does a full
+# sync instead of skipping packages added to the allowlist since last time.
+rm -f "$OUTPUT_DIR/status" "$OUTPUT_DIR/todo" 2>/dev/null || true
 bandersnatch --config "$WORK/bandersnatch.conf" mirror
 
 # Ship provenance with the mirror so the disconnected side can audit/verify.
