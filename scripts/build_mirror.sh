@@ -47,6 +47,7 @@ emit("OUTPUT_DIR", c["mirror"]["output_dir"])
 emit("MASTER", c["mirror"]["master"])
 emit("WORKERS", c["mirror"]["workers"])
 emit("KEEP_JSON", "1" if c["mirror"].get("keep_json", True) else "")
+emit("VERIFY_AUTO", "1" if c.get("verify", {}).get("auto") else "")
 PY
 }
 eval "$(read_settings)"
@@ -130,7 +131,28 @@ echo "Done. Mirror is at: $OUTPUT_DIR"
 echo
 echo "  IMPORTANT: read $WORK/report.txt — it lists anything that could NOT"
 echo "  be resolved and would be missing offline."
+
+# --- [verify].auto: run the per-Python container verification automatically --- #
+if [ -n "$VERIFY_AUTO" ]; then
+    echo
+    echo "==> [verify] auto = true — running per-Python mirror verification"
+    # Non-fatal: the mirror is already built. verify_mirror.sh exits 0 (all good),
+    # 1 (a real gap — surfaced loudly), or 2 (no container runtime — skipped).
+    if "$HERE/verify_mirror.sh" "$SETTINGS"; then
+        echo "  verification: MIRROR FULLY FUNCTIONAL"
+    else
+        rc=$?
+        if [ "$rc" = "2" ]; then
+            echo "  verification SKIPPED: no container runtime (podman/docker) found." >&2
+        else
+            echo "  *** verification FAILED: see $WORK/verify-report.txt ***" >&2
+            echo "  *** the mirror is missing something for at least one Python. ***" >&2
+        fi
+    fi
+else
+    echo
+    echo "  Recommended: scripts/verify_mirror.sh   (per-Python pip dry-run in"
+    echo "               containers against this mirror; needs podman or docker)"
+fi
 echo
-echo "  Recommended: scripts/verify_mirror.sh   (per-Python pip dry-run in"
-echo "               containers against this mirror; needs podman or docker)"
 echo "  Then copy $OUTPUT_DIR to the disconnected host and run scripts/serve_mirror.sh"

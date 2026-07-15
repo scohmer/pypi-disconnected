@@ -67,11 +67,11 @@ port = 8080
 # scripts/verify_mirror.sh runs pip install --dry-run for every top-level
 # requirement inside a container for EACH target Python, against the freshly
 # built mirror -- on the CONNECTED build machine, before you ship it.
+# Run verification automatically at the end of build_mirror.sh. If no container
+# runtime is available it is skipped with a warning (the build still succeeds).
+auto = true
 # Container runtime: "auto" (prefer podman, else docker), "podman", or "docker".
 runtime = "auto"
 # Image name template; {py} is replaced by each targets.python_versions entry.
 image_template = "docker.io/library/python:{py}-slim"
-# Parallel pip checks inside each container (speeds up the per-library sweep).
-jobs = 4
-# Local port used to serve the mirror to the containers during verification.
-port = 8099
+# Par
